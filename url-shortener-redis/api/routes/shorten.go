@@ -2,8 +2,10 @@ package routes
 
 import (
 	"time"
-
+	"github.com/gurshaan17/go-lang/tree/main/url-shortener-redis/database"
 	"github.com/gofiber/fiber/v2"
+	"os"
+	"strconv"
 )
 
 type request struct {
@@ -25,15 +27,37 @@ func ShortenURL(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "can't parse json"})
 	}
+
 	//implement rate limit & check if input is an actual URL
+	r2 := database.CreateClient(1)
+	defer r2.Close()
+	val, err := r2.Get(database.Ctx, c.IP()).Result()
+	if err == redis.Nil{ 
+		_ = r2.Set(database.Ctx, c.IP(), os.Getenv("API_QUOTA"), 30*60*time.Second).Err()
+	} else {
+		val, _ := r2.Get(database.Ctx, c.IP()).Result()
+		valInt, _ := strconv.Atoi(val)
+		if valInt <= 0 {
+			limit, _ := r2.TTL(database.Ctx, c.IP()).Result()
+			return c.Status(500).JSON(fiber.Map{
+				"error": "rate limit exceeded",
+				"rate_limit_reset": limit / time.Nanosecond / time.Minute
+			})
+		}
+	}
+
 
 	if !govalidator.IsURL(body.URL) {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid URL"})
 	}
+
+
 	// check for domain error
 	if !helpers.RemoveDomainError(body.URL) {
 		return c.Status(503).JSON(fiber.Map{"error": "you can't access it"})
 	}
 	// enforce https, ssl
 	body.URL = helpers.EnforceHTTP(body.URL)
+
+	r2.Decr(database.Ctx, c.IP())
 }
